@@ -596,19 +596,28 @@ export async function runGatewayUpdate(opts: UpdateRunnerOptions = {}): Promise<
           break;
         }
       } finally {
-        const removeStep = await runStep(
-          step(
-            "preflight cleanup",
-            ["git", "-C", gitRoot, "worktree", "remove", "--force", worktreeDir],
-            gitRoot,
-          ),
-        );
-        steps.push(removeStep);
+        // 1. 仅解绑 worktree，不让 git 物理删除文件 (去掉 --force)
+        // 使用 'prune' 或者手动修改 git 状态，但最稳妥的是让 git 知道这个目录不再是 worktree
         await runCommand(["git", "-C", gitRoot, "worktree", "prune"], {
           cwd: gitRoot,
           timeoutMs,
         }).catch(() => null);
-        await fs.rm(preflightRoot, { recursive: true, force: true }).catch(() => {});
+
+        // 2. 使用 Node.js 的 fs.rm 进行物理删除
+        // 关键点：加一个空的 .catch()。即便删不掉（被占用），也不要让它抛出异常中断程序。
+        await fs
+          .rm(preflightRoot, {
+            recursive: true,
+            force: true,
+            maxRetries: 3,
+            retryDelay: 100,
+          })
+          .catch((err) => {
+            // 仅记录日志，不推入 steps 导致 ERROR
+            console.warn(
+              `[Cleanup] Temporary directory ${preflightRoot} could not be fully removed: ${err.message}`,
+            );
+          });
       }
 
       if (!selectedSha) {
